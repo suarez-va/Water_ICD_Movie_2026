@@ -1,0 +1,18 @@
+#!/bin/bash
+
+#SBATCH -J ehrenfest
+#SBATCH -A gts-jkretchmer3-chemx
+#SBATCH -N 1 --cpus-per-task=1
+#SBATCH --mem-per-cpu=8GB
+#SBATCH -t 69:00:00
+#SBATCH --output=slurm_output.out
+#SBATCH --error=slurm_error.err
+
+cd $SLURM_SUBMIT_DIR
+
+eval "$(/storage/home/hcoda1/8/vsuarez6/p-jkretchmer3-0/MyConda/bin/conda shell.bash hook)"
+export PYTHONPATH=/storage/home/hcoda1/8/vsuarez6/p-jkretchmer3-0/TIDES/src:$PYTHONPATH
+conda activate tides
+
+srun python3 water_ehrenfest.py > output.out 
+
