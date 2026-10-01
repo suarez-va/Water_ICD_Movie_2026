@@ -14,6 +14,14 @@ ambient occlusion dominates render time -- roughly 20 s of a 20.3 s frame at
 them to 4 is ~5x faster with no visible difference on smooth translucent
 surfaces.  Pass --renderer internal to go back to VMD's own renderer.
 
+--renderer optix ray-traces on an NVIDIA GPU with VMD's TachyonL-OptiX
+(`render TachyonLOptiXInternal`).  It needs a VMD built with CUDA and OptiX --
+VMD's startup prints "Detected 1 available TachyonL/OptiX ray tracing
+accelerator" when it is -- such as the cluster's vmd/1.9.3; the local VMD 2.0
+cannot load OptiX.  VMD writes the image directly and takes --ao-samples and
+--aa-samples as settings.  It compiles its OptiX shaders at every launch, a
+fixed per-chunk cost, so larger chunks pay off with this renderer.
+
 Neither the bundled tachyon binary nor VMD's writer was compiled with PNG
 support, so frames land as Targa and Pillow converts them.
 
@@ -207,6 +215,7 @@ def render_chunk(vmd, cubes, tgadir, settings, size, quiet,
     so callers such as fit_view.py do not care which backend ran.
     """
     tachyon = tachyon or TACHYON
+    # internal and optix: VMD writes the image itself.
     external = renderer == 'external'
     if external and not (shutil.which(tachyon) or os.path.exists(tachyon)):
         raise SystemExit(f'render_movie.py: tachyon binary not found: {tachyon}')
@@ -242,7 +251,9 @@ def render_chunk(vmd, cubes, tgadir, settings, size, quiet,
                VMDMOVIE_SETTINGS=settings,
                VMDMOVIE_WIDTH=str(size[0]),
                VMDMOVIE_HEIGHT=str(size[1]),
-               VMDMOVIE_RENDERER='external' if external else 'internal')
+               VMDMOVIE_RENDERER=renderer,
+               VMDMOVIE_AO_SAMPLES=str(ao_samples),
+               VMDMOVIE_AA_SAMPLES=str(aa_samples))
     try:
         with open(os.path.join(HERE, 'render_frames.tcl')) as script:
             proc = subprocess.run([vmd, '-dispdev', 'text'], stdin=script,
@@ -304,17 +315,19 @@ def main(argv=None):
                    help='image size in pixels; the camera in vmd_settings.tcl '
                         'is tuned for this 16:9 aspect, so changing the ratio '
                         '(not the resolution) means retuning its scale')
-    p.add_argument('--renderer', choices=['external', 'internal'],
+    p.add_argument('--renderer', choices=['external', 'internal', 'optix'],
                    default='external',
                    help='external: VMD writes a Tachyon scene, this script '
                         'lowers its sample counts and runs the tachyon binary. '
-                        'internal: VMD renders directly, locked at 12/12 samples')
+                        'internal: VMD renders directly, locked at 12/12 samples. '
+                        'optix: GPU ray tracing with TachyonL-OptiX; needs a '
+                        'CUDA/OptiX build of VMD')
     p.add_argument('--ao-samples', type=int, default=4, metavar='N',
-                   help='ambient-occlusion rays per pixel (external only). '
+                   help='ambient-occlusion rays per pixel (external and optix). '
                         'VMD writes 12; 4 is ~5x faster and visually equivalent '
                         'here, 1-2 is faster still but grainier')
     p.add_argument('--aa-samples', type=int, default=4, metavar='N',
-                   help='antialiasing samples per pixel (external only)')
+                   help='antialiasing samples per pixel (external and optix)')
     p.add_argument('--tachyon', default=TACHYON,
                    help='standalone tachyon binary')
     p.add_argument('--upsample', type=int, default=1, metavar='N',
@@ -358,6 +371,9 @@ def main(argv=None):
     if args.renderer == 'external':
         print(f'  renderer external tachyon, AO {args.ao_samples} / '
               f'AA {args.aa_samples} samples')
+    elif args.renderer == 'optix':
+        print(f'  renderer TachyonL-OptiX (GPU), AO {args.ao_samples} / '
+              f'AA {args.aa_samples} samples')
     else:
         print('  renderer TachyonInternal (12/12 samples, not adjustable)')
     print(f'  grid     {"raw" if args.upsample == 1 else f"{args.upsample}x spline upsampled"}, '
@@ -377,8 +393,13 @@ def main(argv=None):
                                 upsample=args.upsample)
             for stem, tga in jobs:
                 if not os.path.exists(tga):
+                    hint = ''
+                    if args.renderer == 'optix':
+                        hint = ('.  Check that this VMD supports the GPU '
+                                'renderer: `echo "render list; quit" | vmd '
+                                '-dispdev text` must list TachyonLOptiXInternal')
                     raise SystemExit(f'render_movie.py: VMD produced no output '
-                                     f'for {stem}.cube')
+                                     f'for {stem}.cube{hint}')
                 to_png(tga, os.path.join(args.outdir, stem + '.png'))
                 if not args.keep_tga:
                     os.unlink(tga)

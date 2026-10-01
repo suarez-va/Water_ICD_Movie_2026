@@ -18,6 +18,8 @@ set settings $env(VMDMOVIE_SETTINGS)
 set width    $env(VMDMOVIE_WIDTH)
 set height   $env(VMDMOVIE_HEIGHT)
 set renderer $env(VMDMOVIE_RENDERER)
+set ao_samples $env(VMDMOVIE_AO_SAMPLES)
+set aa_samples $env(VMDMOVIE_AA_SAMPLES)
 
 # Tell vmd_settings.tcl not to apply itself on source; we drive it per frame.
 set NO_AUTO_APPLY 1
@@ -28,6 +30,13 @@ source $settings
 # the target size or the external renderer produces a stretched image.
 display resize $width $height
 setup_scene
+
+# The GPU renderer takes its sample counts as VMD settings rather than from a
+# scene file, so they are set once here instead of patched per frame.
+if {$renderer eq "optix"} {
+    render aasamples TachyonLOptiXInternal $aa_samples
+    render aosamples TachyonLOptiXInternal $ao_samples
+}
 
 set fp [open $joblist r]
 set lines [split [read $fp] "\n"]
@@ -47,8 +56,11 @@ foreach line $lines {
     # (to lower the AO/antialiasing sample counts, the dominant render cost) and
     # feeds to the standalone tachyon binary.  TachyonInternal hardcodes 12/12
     # and offers no way to change them.
+    # "optix" ray-traces on an NVIDIA GPU; it needs a CUDA/OptiX build of VMD.
     if {$renderer eq "external"} {
         render Tachyon $out
+    } elseif {$renderer eq "optix"} {
+        render TachyonLOptiXInternal $out
     } else {
         render TachyonInternal $out
     }
