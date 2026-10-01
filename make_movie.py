@@ -138,7 +138,7 @@ def main(argv=None):
     p = argparse.ArgumentParser(
         description='Encode a directory of PNG frames into a video with ffmpeg.',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    p.add_argument('--frames', default='pacceptor/frames', help='directory of .png frames')
+    p.add_argument('--frames', default='snapshots', help='directory of .png frames')
     p.add_argument('-o', '--output', default='hole_movie.mp4', help='output video')
     p.add_argument('--fps', type=int, default=120, help='playback frame rate')
     p.add_argument('--start', type=int, default=0, help='index of the first frame')

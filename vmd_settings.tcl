@@ -51,8 +51,8 @@ set ATOM_BOND_RADIUS  0.3
 #
 # Current values: fit_view.py --margin 0.08, probes 0..870, ROT 180/0/90.
 set VIEW_ZOOM     1.74
-set VIEW_SHIFT_X  0.08
-set VIEW_SHIFT_Y  0.097
+set VIEW_SHIFT_X  0.35
+set VIEW_SHIFT_Y  -0.35
 
 # The cube the camera is derived from.  `display resetview` runs on this cube
 # once and its result is reused for every frame, so the camera never depends on
