@@ -57,8 +57,8 @@ water_donor.kernel()
 water_acceptor.kernel()
 
 rt_water = rt_ehrenfest.RT_Ehrenfest(dimer, 0.25, 1230,
-                                     filename="donor_excite.out", prop="magnus_interpol",
-                                     frequency=4, chkfile="donor_excite.chk", verbose=6,
+                                     filename="acceptor_excite.out", prop="magnus_interpol",
+                                     frequency=4, chkfile="acceptor_excite.chk", verbose=6,
                                      Ne_step=1, N_step=1, get_mo_coeff_print = rt_utils.get_noscf_orbitals)
 rt_water.nuc.mass[0] = 29156.945034195
 rt_water.nuc.mass[1] = 3670.483014130 

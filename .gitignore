@@ -1,0 +1,8 @@
+__pycache__/
+slurm_*
+*.chk
+*.out
+*.cube
+*.xyz
+*.dat
+
