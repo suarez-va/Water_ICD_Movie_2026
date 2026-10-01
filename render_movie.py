@@ -203,7 +203,7 @@ def run_tachyon(tachyon, scene, tga):
 
 def render_chunk(vmd, cubes, tgadir, settings, size, quiet,
                  renderer='external', ao_samples=4, aa_samples=4,
-                 tachyon=None, upsample=1):
+                 tachyon=None, upsample=1, stats=None, pool_workers=None):
     """One VMD launch: render every cube in `cubes` to a .tga in tgadir.
 
     With upsample > 1 each cube is first spline-resampled into tgadir and VMD
@@ -213,7 +213,14 @@ def render_chunk(vmd, cubes, tgadir, settings, size, quiet,
     patched to lower the sample counts and ray-traced by the standalone binary.
     Either way the contract is the same -- TGAs in tgadir, [(stem, tga)] back --
     so callers such as fit_view.py do not care which backend ran.
+
+    If `stats` is a dict, wall times (s) for each stage are added into it; see
+    print_profile.
     """
+    stats = {} if stats is None else stats
+    def add(key, secs):
+        stats[key] = stats.get(key, 0.0) + secs
+
     tachyon = tachyon or TACHYON
     # internal and optix: VMD writes the image itself.
     external = renderer == 'external'
@@ -230,8 +237,11 @@ def render_chunk(vmd, cubes, tgadir, settings, size, quiet,
         cubes = [os.path.join(tgadir, os.path.splitext(os.path.basename(c))[0]
                               + '.cube') for c in srcs]
         fine_cubes = cubes
-        with ProcessPoolExecutor(max_workers=min(len(srcs), os.cpu_count() or 1)) as ex:
+        t = time.time()
+        width = pool_workers or os.cpu_count() or 1
+        with ProcessPoolExecutor(max_workers=min(len(srcs), width)) as ex:
             list(ex.map(upsample_cube, srcs, cubes, [upsample] * len(srcs)))
+        add('upsample', time.time() - t)
     with tempfile.NamedTemporaryFile('w', suffix='.txt', delete=False) as jf:
         for cube in cubes:
             stem = os.path.splitext(os.path.basename(cube))[0]
@@ -254,6 +264,7 @@ def render_chunk(vmd, cubes, tgadir, settings, size, quiet,
                VMDMOVIE_RENDERER=renderer,
                VMDMOVIE_AO_SAMPLES=str(ao_samples),
                VMDMOVIE_AA_SAMPLES=str(aa_samples))
+    t = time.time()
     try:
         with open(os.path.join(HERE, 'render_frames.tcl')) as script:
             proc = subprocess.run([vmd, '-dispdev', 'text'], stdin=script,
@@ -262,6 +273,7 @@ def render_chunk(vmd, cubes, tgadir, settings, size, quiet,
         os.unlink(joblist)
         for fine in fine_cubes:
             os.unlink(fine)
+    vmd_wall = time.time() - t
 
     if 'RENDER_LOOP_DONE' not in proc.stdout:
         sys.stderr.write('\nrender_movie.py: VMD did not finish the render loop.\n')
@@ -271,6 +283,21 @@ def render_chunk(vmd, cubes, tgadir, settings, size, quiet,
             sys.stderr.write('--- VMD stderr (tail) ---\n')
             sys.stderr.write('\n'.join(proc.stderr.splitlines()[-20:]) + '\n')
         raise SystemExit(1)
+    in_frames = 0.0
+    nframe = 0
+    for line in proc.stdout.splitlines():
+        f = line.split()
+        if f[:2] == ['TIMING', 'frame']:
+            load, setup, render = (int(f[i]) / 1000 for i in (4, 6, 8))
+            add('vmd load', load)
+            add('vmd setup', setup)
+            # The first render of a launch can carry one-off renderer setup
+            # (OptiX context creation), so it is tracked apart from the rest.
+            add('vmd render first' if nframe == 0 else 'vmd render rest', render)
+            nframe += 1
+            in_frames += load + setup + render
+    add('vmd launch', vmd_wall - in_frames)
+    add('launches', 1)
     if not quiet:
         for line in proc.stdout.splitlines():
             # Surface real problems; VMD is otherwise extremely chatty.
@@ -282,12 +309,51 @@ def render_chunk(vmd, cubes, tgadir, settings, size, quiet,
             if not os.path.exists(scene):
                 raise SystemExit(f'render_movie.py: VMD wrote no scene for {stem}')
             patch_scene(scene, ao_samples, aa_samples, size)
+            t = time.time()
             run_tachyon(tachyon, scene, tga)
+            add('tachyon', time.time() - t)
             # Drop each scene as soon as it is consumed; a chunk's worth of
             # scenes plus TGAs together is a lot of scratch at large sizes.
             os.unlink(scene)
 
     return [(stem, tga) for stem, tga, _ in jobs]
+
+
+def print_profile(stats, nframes, total, workers=1):
+    """The --profile report: where the time went, per frame.
+
+    With workers > 1 the stages of different chunks run at the same time, so
+    the stage figures are summed over workers and add up to more than the wall
+    time; the wall-time line is the throughput that matters.
+    """
+    launches = int(stats.get('launches', 0))
+    rows = [
+        ('upsample', 'upsample', 'spline resampling, parallel per chunk'),
+        ('vmd launch', 'vmd launch+init', f'{launches} launch(es); VMD start, '
+                                          'CUDA/OptiX init, settings'),
+        ('vmd load', 'vmd load cube', 'parse the cube file'),
+        ('vmd setup', 'vmd setup reps', 'define reps + camera (surfaces are '
+                                        'built lazily, inside render)'),
+        ('vmd render first', 'vmd render, 1st', 'first frame of each launch '
+                                                '(+ one-off renderer setup)'),
+        ('vmd render rest', 'vmd render, rest', 'isosurface build + optix/'
+                                               'internal ray trace or external '
+                                               'scene write'),
+        ('tachyon', 'tachyon', 'external renderer ray trace'),
+        ('png', 'png convert', 'TGA -> PNG'),
+    ]
+    print(f'\ntiming per frame, averaged over {nframes} frames:')
+    print(f'    {"wall time":18s} {total / nframes:6.2f} s   '
+          f'{workers} worker(s)' + ('; the stages below overlap'
+                                    if workers > 1 else ''))
+    accounted = 0.0
+    for key, label, note in rows:
+        if key in stats:
+            accounted += stats[key]
+            print(f'    {label:18s} {stats[key] / nframes:6.2f} s   {note}')
+    if workers == 1:
+        print(f'    {"other":18s} {(total - accounted) / nframes:6.2f} s   '
+              f'joblist, file handling')
 
 
 def to_png(tga, png):
@@ -342,6 +408,14 @@ def main(argv=None):
     p.add_argument('--keep-tga', action='store_true',
                    help='keep the intermediate Targa files')
     p.add_argument('--quiet', action='store_true', help='suppress VMD warnings')
+    p.add_argument('--workers', type=int, default=1, metavar='N',
+                   help='render N chunks at once, each in its own VMD launch. '
+                        'Overlaps the serial CPU stages (upsampling, cube '
+                        'parsing, VMD/OptiX start-up) so the GPU stays busy; '
+                        'most useful with --renderer optix.  With external, '
+                        'each tachyon already uses every core')
+    p.add_argument('--profile', action='store_true',
+                   help='print a per-stage timing breakdown at the end')
     args = p.parse_args(argv)
 
     settings = args.settings if os.path.isabs(args.settings) \
@@ -361,6 +435,8 @@ def main(argv=None):
     if args.upsample < 1:
         raise SystemExit('render_movie.py: --upsample must be at least 1')
     chunk = min(args.chunk, UPSAMPLED_CHUNK) if args.upsample > 1 else args.chunk
+    if args.workers < 1:
+        raise SystemExit('render_movie.py: --workers must be at least 1')
     os.makedirs(args.outdir, exist_ok=True)
     tgadir = args.outdir if args.keep_tga else tempfile.mkdtemp(prefix='vmdtga_')
 
@@ -378,19 +454,43 @@ def main(argv=None):
         print('  renderer TachyonInternal (12/12 samples, not adjustable)')
     print(f'  grid     {"raw" if args.upsample == 1 else f"{args.upsample}x spline upsampled"}, '
           f'{chunk} frames per VMD launch')
+    workers_line = f'  workers  {args.workers} concurrent VMD launch(es)'
+    if args.upsample > 1:
+        # Every in-flight chunk keeps its upsampled cubes in scratch until its
+        # VMD exits; a 2x cube is ~58 MB.
+        gb = args.workers * chunk * 58e-3 * (args.upsample / 2) ** 3
+        workers_line += f', up to ~{gb:.1f} GB of upsampled scratch'
+    print(workers_line)
     print(f'  output   {args.outdir}/\n')
 
     t0 = time.time()
     done = 0
+    stats = {}
+    batches = [cubes[c0:c0 + chunk] for c0 in range(0, len(cubes), chunk)]
+    # Concurrent chunks share the cores for upsampling instead of each
+    # spawning a full-width process pool.
+    pool_workers = max(1, (os.cpu_count() or 1) // args.workers)
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    # Threads suffice: the work happens in VMD/tachyon subprocesses and the
+    # upsampling process pool.  PNG conversion and progress stay on this thread.
+    ex = ThreadPoolExecutor(max_workers=args.workers)
     try:
-        for c0 in range(0, len(cubes), chunk):
-            batch = cubes[c0:c0 + chunk]
-            jobs = render_chunk(args.vmd, batch, tgadir, settings, args.size,
-                                args.quiet, renderer=args.renderer,
-                                ao_samples=args.ao_samples,
-                                aa_samples=args.aa_samples,
-                                tachyon=args.tachyon,
-                                upsample=args.upsample)
+        futures = []
+        for batch in batches:
+            chunk_stats = {}
+            fut = ex.submit(render_chunk, args.vmd, batch, tgadir, settings,
+                            args.size, args.quiet, renderer=args.renderer,
+                            ao_samples=args.ao_samples,
+                            aa_samples=args.aa_samples,
+                            tachyon=args.tachyon, upsample=args.upsample,
+                            stats=chunk_stats, pool_workers=pool_workers)
+            futures.append((fut, chunk_stats))
+        stats_of = {fut: s for fut, s in futures}
+        for fut in as_completed(stats_of):
+            jobs = fut.result()
+            for k, v in stats_of[fut].items():
+                stats[k] = stats.get(k, 0.0) + v
+            t_png = time.time()
             for stem, tga in jobs:
                 if not os.path.exists(tga):
                     hint = ''
@@ -404,14 +504,19 @@ def main(argv=None):
                 if not args.keep_tga:
                     os.unlink(tga)
                 done += 1
+            stats['png'] = stats.get('png', 0.0) + time.time() - t_png
             el = time.time() - t0
             print(f'\r  {done}/{len(cubes)} frames, {el:.0f}s elapsed, '
                   f'{el / done:.2f}s/frame, ~{el / done * (len(cubes) - done):.0f}s left',
                   end='', flush=True)
     finally:
+        # On an error, drop chunks not yet started; running ones finish first.
+        ex.shutdown(wait=True, cancel_futures=True)
         if not args.keep_tga and os.path.isdir(tgadir):
             shutil.rmtree(tgadir, ignore_errors=True)
 
+    if args.profile and done:
+        print_profile(stats, done, time.time() - t0, args.workers)
     print(f'\n\ndone: {done} PNGs in {args.outdir}/ in {time.time() - t0:.0f}s')
     print('  stitch into a movie with:')
     print(f'    ffmpeg -framerate 30 -i {args.outdir}/%d.png '

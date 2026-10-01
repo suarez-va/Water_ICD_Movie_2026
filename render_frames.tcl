@@ -13,6 +13,10 @@
 # arrive through the environment because `-args` is only wired up for `-e`.
 # ---------------------------------------------------------------------------
 
+# Stage timings, in ms, for render_movie.py --profile.  Always printed; the
+# driver ignores them unless asked.
+set t_script [clock milliseconds]
+
 set joblist  $env(VMDMOVIE_JOBLIST)
 set settings $env(VMDMOVIE_SETTINGS)
 set width    $env(VMDMOVIE_WIDTH)
@@ -38,6 +42,8 @@ if {$renderer eq "optix"} {
     render aosamples TachyonLOptiXInternal $ao_samples
 }
 
+puts "TIMING startup [expr {[clock milliseconds] - $t_script}]"
+
 set fp [open $joblist r]
 set lines [split [read $fp] "\n"]
 close $fp
@@ -49,9 +55,12 @@ foreach line $lines {
     set cube [lindex $parts 0]
     set out  [lindex $parts 1]
 
+    set t0 [clock milliseconds]
     set molid [mol new $cube type cube waitfor all]
+    set t1 [clock milliseconds]
     setup_frame $molid
     setup_view  $molid
+    set t2 [clock milliseconds]
     # "external" writes a Tachyon scene file, which render_movie.py then patches
     # (to lower the AO/antialiasing sample counts, the dominant render cost) and
     # feeds to the standalone tachyon binary.  TachyonInternal hardcodes 12/12
@@ -64,6 +73,8 @@ foreach line $lines {
     } else {
         render TachyonInternal $out
     }
+    set t3 [clock milliseconds]
+    puts "TIMING frame [file rootname [file tail $cube]] load [expr {$t1 - $t0}] setup [expr {$t2 - $t1}] render [expr {$t3 - $t2}]"
     mol delete $molid
     incr n
     puts "FRAME_DONE $out"
