@@ -6,3 +6,8 @@ slurm_*
 *.xyz
 *.dat
 
+snapshots/
+*/frames/
+*.png
+*.tga
+*.mp4

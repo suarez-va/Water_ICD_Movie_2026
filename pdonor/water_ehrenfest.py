@@ -56,9 +56,9 @@ dimer.kernel()
 water_donor.kernel()
 water_acceptor.kernel()
 
-rt_water = rt_ehrenfest.RT_Ehrenfest(dimer, 0.25, 1230,
+rt_water = rt_ehrenfest.RT_Ehrenfest(dimer, 1.0, 1230,
                                      filename="donor_excite.out", prop="magnus_interpol",
-                                     frequency=4, chkfile="donor_excite.chk", verbose=6,
+                                     frequency=1, chkfile="donor_excite.chk", verbose=6,
                                      Ne_step=1, N_step=1, get_mo_coeff_print = rt_utils.get_noscf_orbitals)
 rt_water.nuc.mass[0] = 29156.945034195
 rt_water.nuc.mass[1] = 3670.483014130 
@@ -84,6 +84,15 @@ rt_utils.input_fragments(rt_water, water_donor, water_acceptor)
 
 from pyscf.tools import cubegen
 
+# Cube grid for the movie.  cubegen's default is a fixed 80 points per axis,
+# which over this dimer's box is only ~0.12-0.16 Bohr spacing (and different
+# per axis) -- coarse enough that VMD's isosurfaces come out visibly faceted.
+# Setting the spacing instead gives the same fine grid in every direction and
+# every frame; the box still follows the molecule with a CUBE_MARGIN border.
+# At 0.06 Bohr: ~168x200x149 points, ~66 MB and ~4 s per cube.
+CUBE_RESOLUTION = 0.06   # Bohr
+CUBE_MARGIN = 3.0        # Bohr; |hole density| > 0.002 reaches ~3 Bohr out
+
 def get_cube_holedensity(rt_obj):
     '''
     Will create Gaussian cube file for molecule electron density
@@ -101,7 +110,8 @@ def get_cube_holedensity(rt_obj):
         rt_obj._scf.mo_coeff = mo_coeff
         rt_obj._scf.mo_occ = mo_occ
         dm_hole = dm_scf - rt_obj.den_ao
-        cubegen.density(rt_obj._scf.mol, cube_name, dm_hole[0] + dm_hole[1])
+        cubegen.density(rt_obj._scf.mol, cube_name, dm_hole[0] + dm_hole[1],
+                        resolution=CUBE_RESOLUTION, margin=CUBE_MARGIN)
 
 rt_water.observables.update({'cube_holedensity' : True})
 rt_water._observables_functions.update({'cube_holedensity' : [get_cube_holedensity, lambda *args: None]})
